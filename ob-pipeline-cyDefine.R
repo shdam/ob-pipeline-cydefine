@@ -40,6 +40,7 @@ parser$add_argument('--data.label_key',
 parser$add_argument("--output_dir", "-o", dest="output_dir", type="character",
                     help="output directory where files will be saved", default=getwd())
 parser$add_argument("--name", "-n", dest="name", type="character", help="name of the dataset")
+parser$add_argument("--cofactor", dest="cofactor", type="numeric", help="transformation cofactor", default = 5)
 
 
 args <- parser$parse_args()
@@ -57,16 +58,17 @@ on.exit(unlink(base_tmp, recursive = TRUE), add = TRUE)
 
 # FOR TESTING
 # Path to zipped data
-dataset_path <- "../cytof_benchmark_test_data"
-train_x_path <- glue("{dataset_path}/data_import.train.matrix.tar.gz")
-train_y_path <- glue("{dataset_path}/data_import.train.labels.tar.gz")
-test_y_path <- glue("{dataset_path}/data_import.test.labels.tar.gz")
-test_x_path <- glue("{dataset_path}/data_import.test.matrices.tar.gz")
+# dataset_path <- "../cytof_benchmark_test_data"
+# train_x_path <- glue("{dataset_path}/data_import.train.matrix.tar.gz")
+# train_y_path <- glue("{dataset_path}/data_import.train.labels.tar.gz")
+# test_y_path <- glue("{dataset_path}/data_import.test.labels.tar.gz")
+# test_x_path <- glue("{dataset_path}/data_import.test.matrices.tar.gz")
 
 cat("Loading data...")
 train_x_path <- args[['data.train_matrix']]
 train_y_path <- args[['data.train_labels']]
 test_x_path <- args[['data.test_matrix']]
+cofactor <- args[['cofactor']]
 
 
 # ---------------------------
@@ -224,21 +226,21 @@ markers <- colnames(x_clean)[RelevantMarkers]
 
 # Transform training data
 training_data <- transform_asinh(training_data, markers = markers) |>
-  mutate(celltype = training_labels)
+  mutate(celltype = training_labels, cofactor = cofactor)
 
 
 # Load and transform test data
 test_data <- lapply(test_x_files, FUN = read_csv_no_header)
 nrows <- sapply(test_data, FUN = nrow)
 test_data <- do.call(rbind, test_data)
-test_data <- transform_asinh(test_data, markers = markers)
+test_data <- transform_asinh(test_data, markers = markers, cofactor = cofactor)
 
 
 classified <- cyDefine(
   reference = training_data,
   query = test_data,
   markers = markers,
-  num.threads = 2,
+  num.threads = 1,
   mtry = ceiling(length(markers)/3),
   num.trees = 500,
   batch_correct = TRUE,
@@ -250,10 +252,8 @@ classified <- cyDefine(
   verbose = FALSE
 )
 
-# aricode::ARI(classified$query$model_prediction, y_clean$V1)
-
 ## ============================================================
-## 5. Export labels
+## 4. Export labels
 ## ============================================================
 
 prediction_files <- test_x_files
@@ -261,20 +261,22 @@ if (length(prediction_files) == 0) {
   stop("No test CSV files found for prediction.")
 }
 
+predictions <- classified$query$model_prediction
+
+groups <- rep(seq_along(nrows), nrows)
+# Split the vector based on the groups
+predictions <- split(predictions, groups)
+
 tmp_dir <- file.path(base_tmp, "predictions_tmp")
 dir.create(tmp_dir, recursive = TRUE, showWarnings = FALSE)
 csv_files <- character(length(prediction_files))
 
 for (i in seq_along(prediction_files)) {
   prediction_file <- prediction_files[[i]]
-  pred_labels <- predict_labels_for_file(LDAclassifier, prediction_file, RejectionThreshold)
 
   csv_file <- file.path(tmp_dir, basename(prediction_file))
-  data.table::fwrite(as.data.frame(pred_labels), file = csv_file, col.names = FALSE, quote = FALSE)
+  data.table::fwrite(as.data.frame(predictions[i]), file = csv_file, col.names = FALSE, quote = FALSE)
   csv_files[i] <- csv_file
-
-  rm(pred_labels)
-  invisible(gc(verbose = FALSE))
 }
 
 # Create tar.gz archive of all CSVs
@@ -283,3 +285,12 @@ tar(tarfile = glue("{output_dir}/{name}_predicted_labels.tar.gz"), files = csv_f
 
 
 # Temporary workspace is cleaned by on.exit.
+
+# ExtractTestY <- file.path(base_tmp, "extract_test_y")
+# extract_archive(test_y_path, ExtractTestY)
+# test_y_files <- list_csv_files(ExtractTestY)
+#
+# test_y <- lapply(test_y_files, FUN = read_csv_no_header)
+# test_y <- do.call(rbind, test_y)
+#
+# aricode::ARI(classified$query$model_prediction, test_y$V1)
