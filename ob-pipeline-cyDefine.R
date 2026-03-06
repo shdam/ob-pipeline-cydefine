@@ -40,10 +40,22 @@ parser$add_argument('--data.label_key',
 parser$add_argument("--output_dir", "-o", dest="output_dir", type="character",
                     help="output directory where files will be saved", default=getwd())
 parser$add_argument("--name", "-n", dest="name", type="character", help="name of the dataset")
+parser$add_argument("--seed", "-s", dest="seed", type="numeric", help="seed", default = 332)
+
 
 
 args <- parser$parse_args()
 
+
+# FOR TESTING
+# Path to zipped data
+# dataset_path <- "../cytof_benchmark_test_data"
+# train_x_path <- glue("{dataset_path}/data_import.train.matrix.tar.gz")
+# train_y_path <- glue("{dataset_path}/data_import.train.labels.tar.gz")
+# test_y_path <- glue("{dataset_path}/data_import.test.labels.tar.gz")
+# test_x_path <- glue("{dataset_path}/data_import.test.matrices.tar.gz")
+# output_dir <- "out"
+# seed <- 332
 
 # Prepare a unique temp workspace under output dir to avoid collisions and /tmp limits
 output_dir <- args[['output_dir']]
@@ -55,18 +67,14 @@ dir.create(base_tmp, recursive = TRUE, showWarnings = FALSE)
 on.exit(unlink(base_tmp, recursive = TRUE), add = TRUE)
 
 
-# FOR TESTING
-# Path to zipped data
-# dataset_path <- "../cytof_benchmark_test_data"
-# train_x_path <- glue("{dataset_path}/data_import.train.matrix.tar.gz")
-# train_y_path <- glue("{dataset_path}/data_import.train.labels.tar.gz")
-# test_y_path <- glue("{dataset_path}/data_import.test.labels.tar.gz")
-# test_x_path <- glue("{dataset_path}/data_import.test.matrices.tar.gz")
+
 
 cat("Loading data...")
 train_x_path <- args[['data.train_matrix']]
 train_y_path <- args[['data.train_labels']]
 test_x_path <- args[['data.test_matrix']]
+
+seed <- args[['seed']]
 
 
 # ---------------------------
@@ -248,8 +256,8 @@ classified <- cyDefine(
   xdim = 6, ydim = 6,
   identify_unassigned = FALSE,
   train_on_unassigned = FALSE,
-  seed = 332,
-  verbose = FALSE
+  seed = seed,
+  verbose = TRUE
 )
 
 # FOR TESTING
