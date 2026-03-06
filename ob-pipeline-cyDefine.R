@@ -40,7 +40,6 @@ parser$add_argument('--data.label_key',
 parser$add_argument("--output_dir", "-o", dest="output_dir", type="character",
                     help="output directory where files will be saved", default=getwd())
 parser$add_argument("--name", "-n", dest="name", type="character", help="name of the dataset")
-parser$add_argument("--cofactor", dest="cofactor", type="numeric", help="transformation cofactor", default = 5)
 
 
 args <- parser$parse_args()
@@ -68,7 +67,6 @@ cat("Loading data...")
 train_x_path <- args[['data.train_matrix']]
 train_y_path <- args[['data.train_labels']]
 test_x_path <- args[['data.test_matrix']]
-cofactor <- args[['cofactor']]
 
 
 # ---------------------------
@@ -224,17 +222,20 @@ training_labels <- unlist(train_label_chunks, use.names = FALSE)
 
 markers <- colnames(x_clean)[RelevantMarkers]
 
-# Transform training data
-training_data <- transform_asinh(training_data, markers = markers) |>
-  mutate(celltype = training_labels, cofactor = cofactor)
-
-
 # Load and transform test data
 test_data <- lapply(test_x_files, FUN = read_csv_no_header)
 nrows <- sapply(test_data, FUN = nrow)
 test_data <- do.call(rbind, test_data)
-test_data <- transform_asinh(test_data, markers = markers, cofactor = cofactor)
 
+
+# Transform data
+if (max(training_data[, markers]) > 100) {
+  cofactor <- ifelse(min(training_data[, markers]) < -100, 150, 5)
+  training_data <- transform_asinh(training_data, markers = markers, cofactor = cofactor)
+  test_data <- transform_asinh(test_data, markers = markers, cofactor = cofactor)
+}
+
+training_data$celltype <- training_labels
 
 classified <- cyDefine(
   reference = training_data,
@@ -247,10 +248,20 @@ classified <- cyDefine(
   xdim = 6, ydim = 6,
   identify_unassigned = FALSE,
   train_on_unassigned = FALSE,
-  # unassigned_name = "unassigned",
   seed = 332,
   verbose = FALSE
 )
+
+# FOR TESTING
+# ExtractTestY <- file.path(base_tmp, "extract_test_y")
+# extract_archive(test_y_path, ExtractTestY)
+# test_y_files <- list_csv_files(ExtractTestY)
+#
+# test_y <- lapply(test_y_files, FUN = read_csv_no_header)
+# test_y <- do.call(rbind, test_y)
+#
+# aricode::ARI(classified$query$model_prediction, test_y$V1)
+
 
 ## ============================================================
 ## 4. Export labels
@@ -263,9 +274,9 @@ if (length(prediction_files) == 0) {
 
 predictions <- classified$query$model_prediction
 
-groups <- rep(seq_along(nrows), nrows)
-# Split the vector based on the groups
-predictions <- split(predictions, groups)
+# Split predictions based on the file nrows
+file_groups <- rep(seq_along(nrows), nrows)
+predictions <- split(predictions, file_groups)
 
 tmp_dir <- file.path(base_tmp, "predictions_tmp")
 dir.create(tmp_dir, recursive = TRUE, showWarnings = FALSE)
@@ -284,13 +295,6 @@ name <- args[['name']]
 tar(tarfile = glue("{output_dir}/{name}_predicted_labels.tar.gz"), files = csv_files, compression = "gzip", tar = "internal")
 
 
-# Temporary workspace is cleaned by on.exit.
+# Temporary workspace is cleaned on exit.
 
-# ExtractTestY <- file.path(base_tmp, "extract_test_y")
-# extract_archive(test_y_path, ExtractTestY)
-# test_y_files <- list_csv_files(ExtractTestY)
-#
-# test_y <- lapply(test_y_files, FUN = read_csv_no_header)
-# test_y <- do.call(rbind, test_y)
-#
-# aricode::ARI(classified$query$model_prediction, test_y$V1)
+
