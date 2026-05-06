@@ -12,6 +12,7 @@ library(data.table)
 library(readr)
 library(dplyr)
 library(utils)
+library(jsonlite)
 library(cyDefine)
 
 
@@ -37,6 +38,10 @@ parser$add_argument('--data.test_matrix',
 parser$add_argument('--data.label_key',
                     type="character",
                     help='label key metadata path (accepted but unused).')
+parser$add_argument('--data.metadata',
+                    type="character",
+                    dest = "metadata",
+                    help='Metadata json.')
 parser$add_argument("--output_dir", "-o", dest="output_dir", type="character",
                     help="output directory where files will be saved", default=getwd())
 parser$add_argument("--name", "-n", dest="name", type="character", help="name of the dataset")
@@ -73,6 +78,8 @@ cat("Loading data...")
 train_x_path <- args[['data.train_matrix']]
 train_y_path <- args[['data.train_labels']]
 test_x_path <- args[['data.test_matrix']]
+test_x_path <- args[['data.test_matrix']]
+metadata_path <- args[['data.metadata']]
 
 seed <- args[['seed']]
 
@@ -135,11 +142,14 @@ read_label_no_header <- function(path) {
 extract_archive(train_x_path, ExtractTrainX)
 extract_archive(train_y_path, ExtractTrainY)
 extract_archive(test_x_path, ExtractTestX)
+utils::untar(metadata_path, exdir = base_tmp)
+
 
 
 train_x_files <- list_csv_files(ExtractTrainX)
 train_y_files <- list_csv_files(ExtractTrainY)
 test_x_files <- list_csv_files(ExtractTestX)
+metadata <- jsonlite::read_json(file.path(base_tmp, gsub("(\\.gz)?$", "", metadata_path)))
 
 if (length(train_x_files) == 0) {
   stop("No training matrix CSV files found after extraction.")
@@ -237,11 +247,11 @@ test_data <- do.call(rbind, test_data)
 
 
 # Transform data
-if (max(training_data[, markers]) > 100) {
-  cofactor <- ifelse(min(training_data[, markers]) < -100, 150, 5)
-  training_data <- transform_asinh(training_data, markers = markers, cofactor = cofactor)
-  test_data <- transform_asinh(test_data, markers = markers, cofactor = cofactor)
-}
+# if (max(training_data[, markers]) > 100) {
+#   cofactor <- ifelse(min(training_data[, markers]) < -100, 150, 5)
+#   training_data <- transform_asinh(training_data, markers = markers, cofactor = cofactor)
+#   test_data <- transform_asinh(test_data, markers = markers, cofactor = cofactor)
+# }
 
 training_data$celltype <- training_labels
 
@@ -254,8 +264,8 @@ classified <- cyDefine(
   num.trees = 500,
   batch_correct = TRUE,
   xdim = 6, ydim = 6,
-  identify_unassigned = FALSE,
-  train_on_unassigned = FALSE,
+  identify_unassigned = !metadata$`drop-ungated-test`,
+  train_on_unassigned = !metadata$`drop-ungated-training`,
   seed = seed,
   verbose = TRUE
 )
@@ -280,7 +290,12 @@ if (length(prediction_files) == 0) {
   stop("No test CSV files found for prediction.")
 }
 
-predictions <- classified$query$model_prediction
+if (metadata$`drop-ungated-test`) {
+  predictions <- classified$query$model_prediction
+} else {
+  predictions <- classified$query$predicted_celltype
+}
+
 
 # Split predictions based on the file nrows
 file_groups <- rep(seq_along(nrows), nrows)
