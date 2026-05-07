@@ -334,10 +334,17 @@ if (length(prediction_files) == 0) {
   stop("No test CSV files found for prediction.")
 }
 
-if (drop_ungated_test) {
-  predictions <- classified$query$model_prediction
+prediction_column <- if (!drop_ungated_test && "predicted_celltype" %in% names(classified$query)) {
+  "predicted_celltype"
 } else {
-  predictions <- classified$query$predicted_celltype
+  "model_prediction"
+}
+if (!prediction_column %in% names(classified$query)) {
+  stop(glue("cyDefine output is missing prediction column {prediction_column}."))
+}
+predictions <- classified$query[[prediction_column]]
+if (length(predictions) != sum(nrows)) {
+  stop(glue("Prediction count mismatch: predictions={length(predictions)} test_rows={sum(nrows)}"))
 }
 
 
@@ -353,7 +360,7 @@ for (i in seq_along(prediction_files)) {
   prediction_file <- prediction_files[[i]]
 
   csv_file <- file.path(tmp_dir, basename(prediction_file))
-  data.table::fwrite(as.data.frame(predictions[i]), file = csv_file, col.names = FALSE, quote = FALSE)
+  data.table::fwrite(as.data.frame(predictions[[i]]), file = csv_file, col.names = FALSE, quote = FALSE)
   csv_files[i] <- csv_file
 }
 
