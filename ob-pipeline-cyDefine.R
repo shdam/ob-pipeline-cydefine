@@ -79,7 +79,10 @@ train_x_path <- args[['data.train_matrix']]
 train_y_path <- args[['data.train_labels']]
 test_x_path <- args[['data.test_matrix']]
 test_x_path <- args[['data.test_matrix']]
-metadata_path <- args[['data.metadata']]
+metadata_path <- args[['metadata']]
+if (is.null(metadata_path) || length(metadata_path) == 0 || is.na(metadata_path)) {
+  stop("Missing required --data.metadata path.")
+}
 
 seed <- args[['seed']]
 
@@ -338,4 +341,3 @@ tar(tarfile = glue("{output_dir}/{name}_predicted_labels.tar.gz"), files = csv_f
 
 
 # Temporary workspace is cleaned on exit.
-
