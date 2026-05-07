@@ -1,8 +1,8 @@
 ## ============================================================
 ## 0. Install dependencies
 ## ============================================================
-if (!require("cyCombine")) remotes::install_github("biosurf/cyCombine")
-if (!require("cyDefine")) remotes::install_github("biosurf/cyDefine")
+if (!require("cyCombine")) remotes::install_github("biosurf/cyCombine", upgrade = "never")
+if (!require("cyDefine")) remotes::install_github("biosurf/cyDefine", upgrade = "never")
 
 cat("Loading tools...")
 
@@ -137,19 +137,38 @@ read_label_no_header <- function(path) {
   suppressWarnings(as.numeric(label_df[[1]]))
 }
 
+read_metadata <- function(path, out_dir) {
+  if (grepl("\\.tar(\\.gz)?$|\\.tgz$", path)) {
+    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+    utils::untar(path, exdir = out_dir)
+    json_files <- list.files(out_dir, pattern = "\\.json$", full.names = TRUE, recursive = TRUE)
+    if (length(json_files) == 0) {
+      stop(glue("No metadata JSON found in {path}."))
+    }
+    return(jsonlite::read_json(json_files[[1]]))
+  }
+
+  if (grepl("\\.gz$", path)) {
+    con <- gzfile(path, open = "rt")
+    on.exit(close(con), add = TRUE)
+    return(jsonlite::fromJSON(paste(readLines(con, warn = FALSE), collapse = "\n"), simplifyVector = FALSE))
+  }
+
+  jsonlite::read_json(path)
+}
+
 
 
 extract_archive(train_x_path, ExtractTrainX)
 extract_archive(train_y_path, ExtractTrainY)
 extract_archive(test_x_path, ExtractTestX)
-utils::untar(metadata_path, exdir = base_tmp)
+metadata <- read_metadata(metadata_path, file.path(base_tmp, "extract_metadata"))
 
 
 
 train_x_files <- list_csv_files(ExtractTrainX)
 train_y_files <- list_csv_files(ExtractTrainY)
 test_x_files <- list_csv_files(ExtractTestX)
-metadata <- jsonlite::read_json(file.path(base_tmp, gsub("(\\.gz)?$", "", metadata_path)))
 
 if (length(train_x_files) == 0) {
   stop("No training matrix CSV files found after extraction.")
@@ -319,5 +338,4 @@ tar(tarfile = glue("{output_dir}/{name}_predicted_labels.tar.gz"), files = csv_f
 
 
 # Temporary workspace is cleaned on exit.
-
 
