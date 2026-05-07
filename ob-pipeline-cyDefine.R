@@ -323,6 +323,17 @@ test_data <- lapply(test_x_files, FUN = read_csv_no_header)
 nrows <- sapply(test_data, FUN = nrow)
 test_data <- do.call(rbind, test_data)
 
+marker_medians <- apply(as.matrix(training_data[, markers, drop = FALSE]), 2, median, na.rm = TRUE)
+marker_medians[!is.finite(marker_medians)] <- 0
+for (marker in markers) {
+  values <- test_data[[marker]]
+  invalid <- !is.finite(values)
+  if (any(invalid)) {
+    values[invalid] <- marker_medians[[marker]]
+    test_data[[marker]] <- values
+  }
+}
+
 
 # Transform data
 # if (max(training_data[, markers]) > 100) {
