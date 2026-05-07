@@ -222,6 +222,7 @@ extract_archive(test_x_path, ExtractTestX)
 metadata <- read_metadata(metadata_path, file.path(base_tmp, "extract_metadata"))
 drop_ungated_training <- metadata_flag(metadata, "drop-ungated-training")
 drop_ungated_test <- metadata_flag(metadata, "drop-ungated-test")
+ungated_label <- "unassigned"
 
 
 
@@ -280,15 +281,20 @@ for (i in seq_along(train_x_files)) {
   x_matrix <- as.matrix(x)
   valid_rows <- rowSums(!is.finite(x_matrix)) == 0
 
-  unlabeled_mask <- is.na(y_num) | y_num == 0
-  keep <- valid_rows & !unlabeled_mask
+  ungated_mask <- is.na(y_num) | y_num == 0
+  keep <- if (drop_ungated_training) {
+    valid_rows & !ungated_mask
+  } else {
+    valid_rows
+  }
 
   if (!any(keep)) {
     stop(glue("Training sample {basename(x_file)} has no valid labeled rows after filtering."))
   }
 
   x_clean <- as.data.frame(x_matrix[keep, , drop = FALSE])
-  y_clean <- data.frame(V1 = y_num[keep])
+  y_clean <- as.character(y_num[keep])
+  y_clean[is.na(y_num[keep]) | y_num[keep] == 0] <- ungated_label
 
   if (is.null(marker_count)) {
     marker_count <- ncol(x_clean)
@@ -299,7 +305,7 @@ for (i in seq_along(train_x_files)) {
   }
 
   train_feature_chunks[[i]] <- x_clean
-  train_label_chunks[[i]] <- y_clean[[1]]
+  train_label_chunks[[i]] <- y_clean
 }
 
 if (is.null(marker_count) || marker_count < 1) {
@@ -355,6 +361,7 @@ classified <- cyDefine(
   xdim = 6, ydim = 6,
   identify_unassigned = !drop_ungated_test,
   train_on_unassigned = !drop_ungated_training,
+  unassigned_name = ungated_label,
   seed = seed,
   verbose = TRUE
 )
@@ -388,6 +395,9 @@ if (!prediction_column %in% names(classified$query)) {
   stop(glue("cyDefine output is missing prediction column {prediction_column}."))
 }
 predictions <- classified$query[[prediction_column]]
+predictions <- as.character(predictions)
+ungated_predictions <- is.na(predictions) | tolower(predictions) %in% c("", "0", "0.0", "na", "nan", "ungated", ungated_label)
+predictions[ungated_predictions] <- "0"
 if (length(predictions) != sum(nrows)) {
   stop(glue("Prediction count mismatch: predictions={length(predictions)} test_rows={sum(nrows)}"))
 }
