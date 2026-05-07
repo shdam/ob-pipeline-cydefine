@@ -419,9 +419,28 @@ for (i in seq_along(prediction_files)) {
   csv_files[i] <- csv_file
 }
 
-# Create tar.gz archive of all CSVs
+# Create tar.gz archive of all CSVs with short member names.
 name <- args[['name']]
-tar(tarfile = glue("{output_dir}/{name}_predicted_labels.tar.gz"), files = csv_files, compression = "gzip", tar = "internal")
+output_tar <- normalizePath(
+  file.path(output_dir, paste0(name, "_predicted_labels.tar.gz")),
+  mustWork = FALSE
+)
+old_wd <- getwd()
+tar_error <- tryCatch(
+  {
+    setwd(tmp_dir)
+    tar(tarfile = output_tar, files = basename(csv_files), compression = "gzip", tar = "internal")
+    NULL
+  },
+  error = function(e) e,
+  finally = setwd(old_wd)
+)
+if (!is.null(tar_error)) {
+  stop(tar_error)
+}
 
+if (!file.exists(output_tar)) {
+  stop(glue("Failed to create prediction archive {output_tar}."))
+}
 
-# Temporary workspace is cleaned on exit.
+unlink(base_tmp, recursive = TRUE, force = TRUE)
