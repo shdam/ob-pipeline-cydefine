@@ -98,6 +98,8 @@ args <- parser$parse_args()
 
 # Prepare a unique temp workspace under output dir to avoid collisions and /tmp limits
 output_dir <- args[['output_dir']]
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+output_dir <- normalizePath(output_dir, mustWork = TRUE)
 base_tmp <- file.path(
   output_dir,
   paste0("tmp_cydefine_", Sys.getpid(), "_", format(Sys.time(), "%Y%m%d%H%M%S"))
@@ -425,6 +427,7 @@ output_tar <- normalizePath(
   file.path(output_dir, paste0(name, "_predicted_labels.tar.gz")),
   mustWork = FALSE
 )
+dir.create(dirname(output_tar), recursive = TRUE, showWarnings = FALSE)
 old_wd <- getwd()
 tar_error <- tryCatch(
   {
