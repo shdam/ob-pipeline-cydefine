@@ -1,8 +1,42 @@
 ## ============================================================
 ## 0. Install dependencies
 ## ============================================================
-if (!require("cyCombine")) remotes::install_github("biosurf/cyCombine", upgrade = "never")
-if (!require("cyDefine")) remotes::install_github("biosurf/cyDefine", upgrade = "never")
+install_github_if_missing <- function(package, repo) {
+  if (require(package, character.only = TRUE, quietly = TRUE)) {
+    return(invisible(TRUE))
+  }
+
+  lib_dir <- .libPaths()[[1]]
+  lock_dir <- file.path(lib_dir, paste0(".", package, "-install.lock"))
+
+  repeat {
+    if (dir.create(lock_dir, showWarnings = FALSE)) {
+      break
+    }
+    if (require(package, character.only = TRUE, quietly = TRUE)) {
+      return(invisible(TRUE))
+    }
+    lock_info <- file.info(lock_dir)
+    if (!is.na(lock_info$mtime) && difftime(Sys.time(), lock_info$mtime, units = "mins") > 30) {
+      unlink(lock_dir, recursive = TRUE, force = TRUE)
+    }
+    Sys.sleep(2)
+  }
+  on.exit(unlink(lock_dir, recursive = TRUE, force = TRUE), add = TRUE)
+
+  if (!require(package, character.only = TRUE, quietly = TRUE)) {
+    unlink(file.path(lib_dir, paste0("00LOCK-", package)), recursive = TRUE, force = TRUE)
+    remotes::install_github(repo, upgrade = "never")
+  }
+  if (!require(package, character.only = TRUE, quietly = TRUE)) {
+    stop(glue::glue("Failed to install required R package {package}."))
+  }
+
+  invisible(TRUE)
+}
+
+install_github_if_missing("cyCombine", "biosurf/cyCombine")
+install_github_if_missing("cyDefine", "biosurf/cyDefine")
 
 cat("Loading tools...")
 
