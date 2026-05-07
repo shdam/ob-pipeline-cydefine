@@ -160,12 +160,34 @@ read_metadata <- function(path, out_dir) {
   jsonlite::read_json(path)
 }
 
+metadata_flag <- function(metadata, name, default = FALSE) {
+  value <- metadata[[name]]
+  if (is.null(value)) {
+    value <- metadata$metadata$stratification[[gsub("-", "_", name)]]
+  }
+  if (is.null(value)) {
+    value <- metadata$stages$stratify$stratification[[gsub("-", "_", name)]]
+  }
+  if (is.null(value)) {
+    return(default)
+  }
+  if (is.logical(value)) {
+    return(isTRUE(value))
+  }
+  if (is.character(value)) {
+    return(tolower(value) %in% c("true", "1", "yes"))
+  }
+  as.logical(value)
+}
+
 
 
 extract_archive(train_x_path, ExtractTrainX)
 extract_archive(train_y_path, ExtractTrainY)
 extract_archive(test_x_path, ExtractTestX)
 metadata <- read_metadata(metadata_path, file.path(base_tmp, "extract_metadata"))
+drop_ungated_training <- metadata_flag(metadata, "drop-ungated-training")
+drop_ungated_test <- metadata_flag(metadata, "drop-ungated-test")
 
 
 
@@ -286,8 +308,8 @@ classified <- cyDefine(
   num.trees = 500,
   batch_correct = TRUE,
   xdim = 6, ydim = 6,
-  identify_unassigned = !metadata$`drop-ungated-test`,
-  train_on_unassigned = !metadata$`drop-ungated-training`,
+  identify_unassigned = !drop_ungated_test,
+  train_on_unassigned = !drop_ungated_training,
   seed = seed,
   verbose = TRUE
 )
@@ -312,7 +334,7 @@ if (length(prediction_files) == 0) {
   stop("No test CSV files found for prediction.")
 }
 
-if (metadata$`drop-ungated-test`) {
+if (drop_ungated_test) {
   predictions <- classified$query$model_prediction
 } else {
   predictions <- classified$query$predicted_celltype
