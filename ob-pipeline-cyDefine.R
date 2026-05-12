@@ -1,8 +1,42 @@
 ## ============================================================
 ## 0. Install dependencies
 ## ============================================================
-if (!require("cyCombine")) remotes::install_github("biosurf/cyCombine")
-if (!require("cyDefine")) remotes::install_github("biosurf/cyDefine")
+install_github_if_missing <- function(package, repo) {
+  if (require(package, character.only = TRUE, quietly = TRUE)) {
+    return(invisible(TRUE))
+  }
+
+  lib_dir <- .libPaths()[[1]]
+  lock_dir <- file.path(lib_dir, paste0(".", package, "-install.lock"))
+
+  repeat {
+    if (dir.create(lock_dir, showWarnings = FALSE)) {
+      break
+    }
+    if (require(package, character.only = TRUE, quietly = TRUE)) {
+      return(invisible(TRUE))
+    }
+    lock_info <- file.info(lock_dir)
+    if (!is.na(lock_info$mtime) && difftime(Sys.time(), lock_info$mtime, units = "mins") > 30) {
+      unlink(lock_dir, recursive = TRUE, force = TRUE)
+    }
+    Sys.sleep(2)
+  }
+  on.exit(unlink(lock_dir, recursive = TRUE, force = TRUE), add = TRUE)
+
+  if (!require(package, character.only = TRUE, quietly = TRUE)) {
+    unlink(file.path(lib_dir, paste0("00LOCK-", package)), recursive = TRUE, force = TRUE)
+    remotes::install_github(repo, upgrade = "never")
+  }
+  if (!require(package, character.only = TRUE, quietly = TRUE)) {
+    stop(glue::glue("Failed to install required R package {package}."))
+  }
+
+  invisible(TRUE)
+}
+
+install_github_if_missing("cyCombine", "biosurf/cyCombine")
+install_github_if_missing("cyDefine", "biosurf/cyDefine")
 
 cat("Loading tools...")
 
@@ -64,6 +98,8 @@ args <- parser$parse_args()
 
 # Prepare a unique temp workspace under output dir to avoid collisions and /tmp limits
 output_dir <- args[['output_dir']]
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+output_dir <- normalizePath(output_dir, mustWork = TRUE)
 base_tmp <- file.path(
   output_dir,
   paste0("tmp_cydefine_", Sys.getpid(), "_", format(Sys.time(), "%Y%m%d%H%M%S"))
@@ -79,7 +115,10 @@ train_x_path <- args[['data.train_matrix']]
 train_y_path <- args[['data.train_labels']]
 test_x_path <- args[['data.test_matrix']]
 test_x_path <- args[['data.test_matrix']]
-metadata_path <- args[['data.metadata']]
+metadata_path <- args[['metadata']]
+if (is.null(metadata_path) || length(metadata_path) == 0 || is.na(metadata_path)) {
+  stop("Missing required --data.metadata path.")
+}
 
 seed <- args[['seed']]
 
@@ -137,19 +176,61 @@ read_label_no_header <- function(path) {
   suppressWarnings(as.numeric(label_df[[1]]))
 }
 
+read_metadata <- function(path, out_dir) {
+  if (grepl("\\.tar(\\.gz)?$|\\.tgz$", path)) {
+    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+    utils::untar(path, exdir = out_dir)
+    json_files <- list.files(out_dir, pattern = "\\.json$", full.names = TRUE, recursive = TRUE)
+    if (length(json_files) == 0) {
+      stop(glue("No metadata JSON found in {path}."))
+    }
+    return(jsonlite::read_json(json_files[[1]]))
+  }
+
+  if (grepl("\\.gz$", path)) {
+    con <- gzfile(path, open = "rt")
+    on.exit(close(con), add = TRUE)
+    return(jsonlite::fromJSON(paste(readLines(con, warn = FALSE), collapse = "\n"), simplifyVector = FALSE))
+  }
+
+  jsonlite::read_json(path)
+}
+
+metadata_flag <- function(metadata, name, default = FALSE) {
+  value <- metadata[[name]]
+  if (is.null(value)) {
+    value <- metadata$metadata$stratification[[gsub("-", "_", name)]]
+  }
+  if (is.null(value)) {
+    value <- metadata$stages$stratify$stratification[[gsub("-", "_", name)]]
+  }
+  if (is.null(value)) {
+    return(default)
+  }
+  if (is.logical(value)) {
+    return(isTRUE(value))
+  }
+  if (is.character(value)) {
+    return(tolower(value) %in% c("true", "1", "yes"))
+  }
+  as.logical(value)
+}
+
 
 
 extract_archive(train_x_path, ExtractTrainX)
 extract_archive(train_y_path, ExtractTrainY)
 extract_archive(test_x_path, ExtractTestX)
-utils::untar(metadata_path, exdir = base_tmp)
+metadata <- read_metadata(metadata_path, file.path(base_tmp, "extract_metadata"))
+drop_ungated_training <- metadata_flag(metadata, "drop-ungated-training")
+drop_ungated_test <- metadata_flag(metadata, "drop-ungated-test")
+ungated_label <- "unassigned"
 
 
 
 train_x_files <- list_csv_files(ExtractTrainX)
 train_y_files <- list_csv_files(ExtractTrainY)
 test_x_files <- list_csv_files(ExtractTestX)
-metadata <- jsonlite::read_json(file.path(base_tmp, gsub("(\\.gz)?$", "", metadata_path)))
 
 if (length(train_x_files) == 0) {
   stop("No training matrix CSV files found after extraction.")
@@ -202,15 +283,20 @@ for (i in seq_along(train_x_files)) {
   x_matrix <- as.matrix(x)
   valid_rows <- rowSums(!is.finite(x_matrix)) == 0
 
-  unlabeled_mask <- is.na(y_num) | y_num == 0
-  keep <- valid_rows & !unlabeled_mask
+  ungated_mask <- is.na(y_num) | y_num == 0
+  keep <- if (drop_ungated_training) {
+    valid_rows & !ungated_mask
+  } else {
+    valid_rows
+  }
 
   if (!any(keep)) {
     stop(glue("Training sample {basename(x_file)} has no valid labeled rows after filtering."))
   }
 
   x_clean <- as.data.frame(x_matrix[keep, , drop = FALSE])
-  y_clean <- data.frame(V1 = y_num[keep])
+  y_clean <- as.character(y_num[keep])
+  y_clean[is.na(y_num[keep]) | y_num[keep] == 0] <- ungated_label
 
   if (is.null(marker_count)) {
     marker_count <- ncol(x_clean)
@@ -221,7 +307,7 @@ for (i in seq_along(train_x_files)) {
   }
 
   train_feature_chunks[[i]] <- x_clean
-  train_label_chunks[[i]] <- y_clean[[1]]
+  train_label_chunks[[i]] <- y_clean
 }
 
 if (is.null(marker_count) || marker_count < 1) {
@@ -245,6 +331,17 @@ test_data <- lapply(test_x_files, FUN = read_csv_no_header)
 nrows <- sapply(test_data, FUN = nrow)
 test_data <- do.call(rbind, test_data)
 
+marker_medians <- apply(as.matrix(training_data[, markers, drop = FALSE]), 2, median, na.rm = TRUE)
+marker_medians[!is.finite(marker_medians)] <- 0
+for (marker in markers) {
+  values <- test_data[[marker]]
+  invalid <- !is.finite(values)
+  if (any(invalid)) {
+    values[invalid] <- marker_medians[[marker]]
+    test_data[[marker]] <- values
+  }
+}
+
 
 # Transform data
 # if (max(training_data[, markers]) > 100) {
@@ -264,8 +361,9 @@ classified <- cyDefine(
   num.trees = 500,
   batch_correct = TRUE,
   xdim = 6, ydim = 6,
-  identify_unassigned = !metadata$`drop-ungated-test`,
-  train_on_unassigned = !metadata$`drop-ungated-training`,
+  identify_unassigned = !drop_ungated_test,
+  train_on_unassigned = !drop_ungated_training,
+  unassigned_name = ungated_label,
   seed = seed,
   verbose = TRUE
 )
@@ -290,10 +388,20 @@ if (length(prediction_files) == 0) {
   stop("No test CSV files found for prediction.")
 }
 
-if (metadata$`drop-ungated-test`) {
-  predictions <- classified$query$model_prediction
+prediction_column <- if (!drop_ungated_test && "predicted_celltype" %in% names(classified$query)) {
+  "predicted_celltype"
 } else {
-  predictions <- classified$query$predicted_celltype
+  "model_prediction"
+}
+if (!prediction_column %in% names(classified$query)) {
+  stop(glue("cyDefine output is missing prediction column {prediction_column}."))
+}
+predictions <- classified$query[[prediction_column]]
+predictions <- as.character(predictions)
+ungated_predictions <- is.na(predictions) | tolower(predictions) %in% c("", "0", "0.0", "na", "nan", "ungated", ungated_label)
+predictions[ungated_predictions] <- "0"
+if (length(predictions) != sum(nrows)) {
+  stop(glue("Prediction count mismatch: predictions={length(predictions)} test_rows={sum(nrows)}"))
 }
 
 
@@ -309,15 +417,33 @@ for (i in seq_along(prediction_files)) {
   prediction_file <- prediction_files[[i]]
 
   csv_file <- file.path(tmp_dir, basename(prediction_file))
-  data.table::fwrite(as.data.frame(predictions[i]), file = csv_file, col.names = FALSE, quote = FALSE)
+  data.table::fwrite(as.data.frame(predictions[[i]]), file = csv_file, col.names = FALSE, quote = FALSE)
   csv_files[i] <- csv_file
 }
 
-# Create tar.gz archive of all CSVs
+# Create tar.gz archive of all CSVs with short member names.
 name <- args[['name']]
-tar(tarfile = glue("{output_dir}/{name}_predicted_labels.tar.gz"), files = csv_files, compression = "gzip", tar = "internal")
+output_tar <- normalizePath(
+  file.path(output_dir, paste0(name, "_predicted_labels.tar.gz")),
+  mustWork = FALSE
+)
+dir.create(dirname(output_tar), recursive = TRUE, showWarnings = FALSE)
+old_wd <- getwd()
+tar_error <- tryCatch(
+  {
+    setwd(tmp_dir)
+    tar(tarfile = output_tar, files = basename(csv_files), compression = "gzip", tar = "internal")
+    NULL
+  },
+  error = function(e) e,
+  finally = setwd(old_wd)
+)
+if (!is.null(tar_error)) {
+  stop(tar_error)
+}
 
+if (!file.exists(output_tar)) {
+  stop(glue("Failed to create prediction archive {output_tar}."))
+}
 
-# Temporary workspace is cleaned on exit.
-
-
+unlink(base_tmp, recursive = TRUE, force = TRUE)
