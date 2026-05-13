@@ -221,10 +221,6 @@ replace_nonfinite_markers <- function(data, markers, replacements, data_name) {
     values <- data[[marker]]
     invalid <- !is.finite(values)
     if (any(invalid)) {
-      message(
-        "Replacing ", sum(invalid), " non-finite ", data_name,
-        " value(s) in marker ", marker, " before cyDefine batch correction"
-      )
       values[invalid] <- replacements[[marker]]
       data[[marker]] <- values
     }
