@@ -85,6 +85,11 @@ parser$add_argument("--prediction-chunk-size",
                     type="integer",
                     help="number of query rows to classify per ranger prediction call",
                     default = as.integer(Sys.getenv("CYDEFINE_PREDICTION_CHUNK_SIZE", "50000")))
+parser$add_argument("--prediction-threads",
+                    dest="prediction_threads",
+                    type="integer",
+                    help="number of ranger threads to use for each prediction chunk",
+                    default = as.integer(Sys.getenv("CYDEFINE_PREDICTION_THREADS", "8")))
 
 
 
@@ -129,6 +134,10 @@ seed <- args[['seed']]
 prediction_chunk_size <- args[['prediction_chunk_size']]
 if (is.null(prediction_chunk_size) || is.na(prediction_chunk_size) || prediction_chunk_size < 1) {
   stop("--prediction-chunk-size must be a positive integer.")
+}
+prediction_threads <- args[['prediction_threads']]
+if (is.null(prediction_threads) || is.na(prediction_threads) || prediction_threads < 1) {
+  stop("--prediction-threads must be a positive integer.")
 }
 
 
@@ -426,7 +435,7 @@ train_cydefine_model <- function(reference, markers, mtry, num.trees, seed, num.
   rf_model
 }
 
-predict_cydefine_chunks <- function(rf_model, query, markers, chunk_size, verbose = TRUE) {
+predict_cydefine_chunks <- function(rf_model, query, markers, chunk_size, prediction_threads, verbose = TRUE) {
   n <- nrow(query)
   predictions <- character(n)
   max_probs <- numeric(n)
@@ -435,7 +444,10 @@ predict_cydefine_chunks <- function(rf_model, query, markers, chunk_size, verbos
   }
   starts <- seq.int(1, n, by = chunk_size)
   if (verbose) {
-    message("Predicting in ", length(starts), " chunk(s) of up to ", chunk_size, " rows")
+    message(
+      "Predicting in ", length(starts), " chunk(s) of up to ", chunk_size,
+      " rows using ", prediction_threads, " ranger thread(s)"
+    )
   }
   for (chunk_index in seq_along(starts)) {
     start <- starts[[chunk_index]]
@@ -448,7 +460,8 @@ predict_cydefine_chunks <- function(rf_model, query, markers, chunk_size, verbos
     }
     pred <- stats::predict(
       object = rf_model,
-      data = query[start:end, markers, drop = FALSE]
+      data = query[start:end, markers, drop = FALSE],
+      num.threads = prediction_threads
     )$predictions
     if (is.null(dim(pred))) {
       predictions[start:end] <- as.character(pred)
@@ -481,6 +494,7 @@ t <- system.time({
     query = query,
     markers = markers,
     chunk_size = prediction_chunk_size,
+    prediction_threads = prediction_threads,
     verbose = TRUE
   )
 })
@@ -517,6 +531,7 @@ if (!drop_ungated_test) {
         query = query[idx, , drop = FALSE],
         markers = markers,
         chunk_size = prediction_chunk_size,
+        prediction_threads = prediction_threads,
         verbose = FALSE
       )$predictions
       rm(unassigned_model)
