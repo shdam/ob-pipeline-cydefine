@@ -216,6 +216,22 @@ metadata_flag <- function(metadata, name, default = FALSE) {
   as.logical(value)
 }
 
+replace_nonfinite_markers <- function(data, markers, replacements, data_name) {
+  for (marker in markers) {
+    values <- data[[marker]]
+    invalid <- !is.finite(values)
+    if (any(invalid)) {
+      message(
+        "Replacing ", sum(invalid), " non-finite ", data_name,
+        " value(s) in marker ", marker, " before cyDefine batch correction"
+      )
+      values[invalid] <- replacements[[marker]]
+      data[[marker]] <- values
+    }
+  }
+  data
+}
+
 
 
 extract_archive(train_x_path, ExtractTrainX)
@@ -333,14 +349,8 @@ test_data <- do.call(rbind, test_data)
 
 marker_medians <- apply(as.matrix(training_data[, markers, drop = FALSE]), 2, median, na.rm = TRUE)
 marker_medians[!is.finite(marker_medians)] <- 0
-for (marker in markers) {
-  values <- test_data[[marker]]
-  invalid <- !is.finite(values)
-  if (any(invalid)) {
-    values[invalid] <- marker_medians[[marker]]
-    test_data[[marker]] <- values
-  }
-}
+training_data <- replace_nonfinite_markers(training_data, markers, marker_medians, "reference")
+test_data <- replace_nonfinite_markers(test_data, markers, marker_medians, "query")
 
 
 # Transform data
