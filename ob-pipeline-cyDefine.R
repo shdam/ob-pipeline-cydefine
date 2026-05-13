@@ -216,7 +216,7 @@ metadata_flag <- function(metadata, name, default = FALSE) {
   as.logical(value)
 }
 
-replace_nonfinite_markers <- function(data, markers, replacements, data_name) {
+replace_nonfinite_markers <- function(data, markers, replacements) {
   for (marker in markers) {
     values <- data[[marker]]
     invalid <- !is.finite(values)
@@ -345,8 +345,8 @@ test_data <- do.call(rbind, test_data)
 
 marker_medians <- apply(as.matrix(training_data[, markers, drop = FALSE]), 2, median, na.rm = TRUE)
 marker_medians[!is.finite(marker_medians)] <- 0
-training_data <- replace_nonfinite_markers(training_data, markers, marker_medians, "reference")
-test_data <- replace_nonfinite_markers(test_data, markers, marker_medians, "query")
+training_data <- replace_nonfinite_markers(training_data, markers, marker_medians)
+test_data <- replace_nonfinite_markers(test_data, markers, marker_medians)
 
 
 # Transform data
