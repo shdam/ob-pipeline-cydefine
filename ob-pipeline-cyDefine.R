@@ -80,11 +80,6 @@ parser$add_argument("--output_dir", "-o", dest="output_dir", type="character",
                     help="output directory where files will be saved", default=getwd())
 parser$add_argument("--name", "-n", dest="name", type="character", help="name of the dataset")
 parser$add_argument("--seed", "-s", dest="seed", type="numeric", help="seed", default = 332)
-parser$add_argument("--prediction-chunk-size",
-                    dest="prediction_chunk_size",
-                    type="integer",
-                    help="number of query rows to classify per ranger prediction call",
-                    default = as.integer(Sys.getenv("CYDEFINE_PREDICTION_CHUNK_SIZE", "50000")))
 
 
 
@@ -126,10 +121,6 @@ if (is.null(metadata_path) || length(metadata_path) == 0 || is.na(metadata_path)
 }
 
 seed <- args[['seed']]
-prediction_chunk_size <- args[['prediction_chunk_size']]
-if (is.null(prediction_chunk_size) || is.na(prediction_chunk_size) || prediction_chunk_size < 1) {
-  stop("--prediction-chunk-size must be a positive integer.")
-}
 
 
 # ---------------------------
@@ -361,176 +352,21 @@ for (marker in markers) {
 
 training_data$celltype <- training_labels
 
-cat("Batch correcting with cyDefine...\n")
-t <- system.time({
-  corrected <- get("batch_correct", asNamespace("cyDefine"))(
-    reference = training_data,
-    query = test_data,
-    markers = markers,
-    xdim = 6, ydim = 6,
-    seed = seed,
-    verbose = TRUE,
-    num.threads = 1
-  )
-})
-message("Batch correction took ", round(t[[3]], 2), " seconds")
-reference <- corrected$reference
-query <- corrected$query
-rm(corrected, test_data)
-gc()
-
-train_cydefine_model <- function(reference, markers, mtry, num.trees, seed, num.threads = 1,
-                                 filter_unassigned = TRUE, unassigned_name = ungated_label,
-                                 verbose = TRUE) {
-  if (filter_unassigned) {
-    reference <- dplyr::filter(reference, celltype != !!unassigned_name)
-  }
-  if (nrow(reference) == 0) {
-    stop("No reference rows available for cyDefine model training.")
-  }
-
-  if (verbose) {
-    message("Training random forest model using ", num.threads, " threads")
-  }
-  set.seed(seed)
-  subset <- dplyr::slice_sample(dplyr::group_by(reference, celltype), n = 2000)
-  model_weights <- dplyr::pull(
-    dplyr::reframe(dplyr::group_by(reference, celltype), weight = dplyr::n() / nrow(reference)),
-    weight
-  )
-
-  t <- system.time({
-    rf_model <- ranger::ranger(
-      y = as.factor(subset$celltype),
-      x = subset[, markers],
-      num.trees = num.trees,
-      mtry = mtry,
-      importance = "impurity",
-      write.forest = TRUE,
-      probability = TRUE,
-      min.node.size = 1,
-      replace = TRUE,
-      sample.fraction = 1,
-      class.weights = model_weights,
-      splitrule = "gini",
-      num.threads = num.threads,
-      seed = seed,
-      save.memory = FALSE,
-      verbose = verbose,
-      oob.error = FALSE
-    )
-  })
-  if (verbose) {
-    message("Model training took ", round(t[[3]], 2), " seconds")
-  }
-  rf_model
-}
-
-predict_cydefine_chunks <- function(rf_model, query, markers, chunk_size, verbose = TRUE) {
-  n <- nrow(query)
-  predictions <- character(n)
-  max_probs <- numeric(n)
-  if (n == 0) {
-    return(list(predictions = predictions, max_probs = max_probs))
-  }
-  starts <- seq.int(1, n, by = chunk_size)
-  if (verbose) {
-    message("Predicting in ", length(starts), " chunk(s) of up to ", chunk_size, " rows")
-  }
-  for (chunk_index in seq_along(starts)) {
-    start <- starts[[chunk_index]]
-    end <- min(start + chunk_size - 1, n)
-    if (verbose && (chunk_index == 1 || chunk_index %% 25 == 0 || chunk_index == length(starts))) {
-      message(
-        "Predicting chunk ", chunk_index, "/", length(starts),
-        " (rows ", start, "-", end, ")"
-      )
-    }
-    pred <- stats::predict(
-      object = rf_model,
-      data = query[start:end, markers, drop = FALSE]
-    )$predictions
-    if (is.null(dim(pred))) {
-      predictions[start:end] <- as.character(pred)
-      max_probs[start:end] <- NA_real_
-    } else {
-      predictions[start:end] <- colnames(pred)[max.col(pred, ties.method = "first")]
-      max_probs[start:end] <- apply(pred, 1, max)
-    }
-    rm(pred)
-    gc(FALSE)
-  }
-  list(predictions = predictions, max_probs = max_probs)
-}
-
-mtry <- ceiling(length(markers) / 3)
-rf_model <- train_cydefine_model(
-  reference = reference,
+classified <- cyDefine(
+  reference = training_data,
+  query = test_data,
   markers = markers,
-  mtry = mtry,
+  num.threads = 1,
+  mtry = ceiling(length(markers)/3),
   num.trees = 500,
+  batch_correct = TRUE,
+  xdim = 6, ydim = 6,
+  identify_unassigned = !drop_ungated_test,
+  train_on_unassigned = !drop_ungated_training,
+  unassigned_name = ungated_label,
   seed = seed,
-  filter_unassigned = TRUE,
   verbose = TRUE
 )
-
-cat("Predicting with chunked cyDefine classifier...\n")
-t <- system.time({
-  prediction_result <- predict_cydefine_chunks(
-    rf_model = rf_model,
-    query = query,
-    markers = markers,
-    chunk_size = prediction_chunk_size,
-    verbose = TRUE
-  )
-})
-message("Classification took ", round(t[[3]], 2), " seconds")
-predictions <- prediction_result$predictions
-
-if (!drop_ungated_test) {
-  if (!drop_ungated_training) {
-    message("Identifying unassigned cells per predicted cell type")
-    final_predictions <- predictions
-    for (popu in unique(predictions)) {
-      idx <- which(predictions == popu)
-      celltype_ref <- dplyr::filter(reference, celltype == !!popu | celltype == !!ungated_label)
-      n_popu <- nrow(dplyr::filter(celltype_ref, celltype == !!popu))
-      if (n_popu < 30) {
-        warning(
-          "Too few cells are available for celltype '", popu,
-          "' for modelling, thus no cells predicted to belong to ",
-          popu, " will be identified as 'unassigned'"
-        )
-        next
-      }
-      unassigned_model <- train_cydefine_model(
-        reference = celltype_ref,
-        markers = markers,
-        mtry = mtry,
-        num.trees = 300,
-        seed = seed,
-        filter_unassigned = FALSE,
-        verbose = FALSE
-      )
-      final_predictions[idx] <- predict_cydefine_chunks(
-        rf_model = unassigned_model,
-        query = query[idx, , drop = FALSE],
-        markers = markers,
-        chunk_size = prediction_chunk_size,
-        verbose = FALSE
-      )$predictions
-      rm(unassigned_model)
-      gc(FALSE)
-    }
-    predictions <- final_predictions
-    rm(final_predictions)
-  } else {
-    predictions[prediction_result$max_probs < 0.8] <- ungated_label
-  }
-}
-
-rm(rf_model, prediction_result, query, reference)
-gc()
 
 # FOR TESTING
 # ExtractTestY <- file.path(base_tmp, "extract_test_y")
@@ -552,6 +388,15 @@ if (length(prediction_files) == 0) {
   stop("No test CSV files found for prediction.")
 }
 
+prediction_column <- if (!drop_ungated_test && "predicted_celltype" %in% names(classified$query)) {
+  "predicted_celltype"
+} else {
+  "model_prediction"
+}
+if (!prediction_column %in% names(classified$query)) {
+  stop(glue("cyDefine output is missing prediction column {prediction_column}."))
+}
+predictions <- classified$query[[prediction_column]]
 predictions <- as.character(predictions)
 ungated_predictions <- is.na(predictions) | tolower(predictions) %in% c("", "0", "0.0", "na", "nan", "ungated", ungated_label)
 predictions[ungated_predictions] <- "0"
